@@ -18,7 +18,7 @@ use crate::{
     feedbacks::{MapIndexesMetadata, cfg_prescience::ControlFlowGraph},
     schedulers::{Scheduler, TestcaseScore},
     state::{HasCorpus, HasNamedMetadata, HasMetadata, HasRand, State, UsesState},
-    Error, feedbacks::{MapNoveltiesMetadata, MapUncoveredNeighboursMetadata, MapNeighboursFeedbackMetadata},
+    Error, feedbacks::{MapNoveltiesMetadata, MapNeighboursFeedbackMetadata},
 };
 
 /// A dummy TestcaseScore calculator
@@ -118,7 +118,9 @@ where
         Ok(())
     }
 
-    fn recalculate_reachable_blocks(&self, state: &mut S) {
+    /// return a map of {(index, depth): frequency}, where frequency is the number of testcases
+    /// with this index being reachable at the given depth
+    fn recalculate_reachable_blocks(&self, state: &mut S) -> HashMap<(usize, usize), usize> {
         let start = Instant::now();
 
         let all_ids = state.corpus().ids().collect::<Vec<CorpusId>>();
@@ -130,6 +132,8 @@ where
         let covered_blocks = full_neighbours_meta.covered_blocks.clone();
         let last_recalc_corpus_ids = full_neighbours_meta.corpus_ids_present_at_recalc.clone();
         full_neighbours_meta.corpus_ids_present_at_recalc = all_ids.clone();
+
+        let mut frequencies = HashMap::new();
 
         let mut recalcs = 0;
         for &idx in &all_ids {
@@ -164,24 +168,45 @@ where
                 }
             }
 
-            let mut tc = state.corpus().get(idx).unwrap().borrow_mut();
-            let neighbours_meta = tc.metadata_mut::<MapUncoveredNeighboursMetadata>().unwrap();
-            let mut reachable_vec = all_reachable.into_iter().collect::<Vec<(usize, usize)>>();
-            reachable_vec.shrink_to_fit();
-            neighbours_meta.all_reachable = reachable_vec;
-            // neighbours_meta.called_functions = called_funcs;
+            for (depth, index) in all_reachable {
+                let entry = (index, depth);
+                let new = if let Some(freq) = frequencies.get(&entry) {
+                    freq + 1
+                } else {
+                    1
+                };
+                frequencies.insert(entry, new);
+            }
+
+            // let mut tc = state.corpus().get(idx).unwrap().borrow_mut();
+            // let neighbours_meta = tc.metadata_mut::<MapUncoveredNeighboursMetadata>().unwrap();
+            // let mut reachable_vec = all_reachable.into_iter().collect::<Vec<(usize, usize)>>();
+            // reachable_vec.shrink_to_fit();
+            // neighbours_meta.all_reachable = reachable_vec;
         }
 
         println!("Whew, recalced all neighbours for {recalcs} entries (out of a possible {}); took: {:.2?}", all_ids.len(), start.elapsed());
 
+        frequencies
     }
 
     /// Recalculate the probability of each testcase being selected for mutation
     pub fn recalc_all_probabilities(&self, state: &mut S) -> Result<(), Error> {
+        let hits_for_edge_at_depth = self.recalculate_reachable_blocks(state);
+        let mut best_reachability = HashMap::new();
+        for ((index, depth), _freq) in hits_for_edge_at_depth.clone() {
+            if let Some(prev_depth) = best_reachability.get_mut(&index) {
+                if depth < *prev_depth { *prev_depth =  depth; }
+            } else {
+                best_reachability.insert(index, depth);
+            }
+        }
+
         let full_neighbours_meta = state
             .metadata::<MapNeighboursFeedbackMetadata>()
             .unwrap();
         let _reachable_all = full_neighbours_meta.reachable_blocks.clone();
+        let covered_blocks = full_neighbours_meta.covered_blocks.clone();
 
         let mut total_score = 0.0;
 
@@ -191,22 +216,10 @@ where
 
         // sort entries by time
         let mut time_ordered = vec![];
-        let mut best_reachability = HashMap::new();
         let mut min_len = 99999999f64;
         let mut len_for_id = HashMap::new();
-        let mut hits_for_edge_at_depth = HashMap::new();
         for &id in &ids {
             let mut tc = state.corpus().get(id)?.borrow_mut();
-            let neighbours = tc.metadata_mut::<MapUncoveredNeighboursMetadata>().unwrap();
-            for &(depth, index) in &neighbours.all_reachable {
-                let hits = hits_for_edge_at_depth.get(&(index, depth)).unwrap_or(&0);
-                hits_for_edge_at_depth.insert((index, depth), *hits + 1);
-                if let Some(prev_depth) = best_reachability.get_mut(&index) {
-                    if depth < *prev_depth { *prev_depth =  depth; }
-                } else {
-                    best_reachability.insert(index, depth);
-                }
-            }
             let len = tc.load_len(state.corpus()).unwrap() as f64;
             if len < min_len { min_len = len; }
             len_for_id.insert(id, len);
@@ -226,13 +239,23 @@ where
         // greedily select a minimal subset of testcases that cover all neighbours (based on runtime)
         for &(entry, _runtime) in &time_ordered {
             let tc = state.corpus().get(entry)?.borrow();
-            let neighbours = tc.metadata::<MapUncoveredNeighboursMetadata>()?;
             let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             for &edge in &idx_meta.list { all_covered.insert(edge); }
 
             let mut neighbour_score = 0f64;
             let mut reachability_favored = false;
-            for &(depth, index) in &neighbours.all_reachable {
+
+            let covered_indexes = idx_meta.list.clone();
+            drop(tc);
+
+            let (all_reachable, _called_funcs) = {
+                let cfg_metadata = state.metadata_mut::<ControlFlowGraph>().unwrap();
+                cfg_metadata.get_all_neighbours_full_depth(&covered_indexes, &covered_blocks)
+            };
+
+            let tc = state.corpus().get(entry)?.borrow();
+            let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
+            for (depth, index) in all_reachable {
                 let rarity = 1f64 / hits_for_edge_at_depth[&(index, depth)] as f64;
                 neighbour_score += rarity * 1f64 / depth as f64;
                 // Make sure that we have entries that get as close as possible to all indexes
@@ -280,8 +303,8 @@ where
             meta.map.insert(entry, score);
         }
 
-//        all_scores.sort_by(|(_, score1), (_, score2)| score1.partial_cmp(score2).unwrap());
-//        println!("Scores: {:?}", all_scores);
+        // all_scores.sort_by(|(_, score1), (_, score2)| score1.partial_cmp(score2).unwrap());
+        // println!("Scores: {:?}", all_scores);
 
         let meta = state
             .metadata_map_mut()
