@@ -647,14 +647,19 @@ where
                 };
                 testcase.add_metadata(meta);
 
+                let max_cov_idx = cfg_metadata.max_coverage_map_index();
+                let required_len = if max_cov_idx > len { max_cov_idx } else { len };
+
                 let neighbours_state = state
                     .metadata_mut::<MapNeighboursFeedbackMetadata>()
                     .unwrap();
 
                 let counts = &mut neighbours_state.hitcounts;
-                if len > counts.len() {
-                    counts.resize(len, 0);
+                if counts.len() < required_len {
+                    counts.resize(required_len, 0);
+                    println!("resized counts to {}", counts.len());
                 }
+
                 for &idx in &novelties {
                     counts[idx] = 0;
                     neighbours_state.reachable_blocks.remove(&idx);
