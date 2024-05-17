@@ -188,11 +188,9 @@ impl ControlFlowGraph {
         self.all_edges.is_empty()
     }
 
-    /// Return the highest coverage map index in the CFG
-    pub fn max_coverage_map_index(&self) -> usize {
-        self.edge_with_coverage_map_idx
-            .keys()
-            .fold(0, |max, idx| if idx.0 > max { max } else { idx.0 }) as usize
+    /// Return the number of edges in the CFG
+    pub fn all_edges_len(&self) -> usize {
+        self.all_edges.len()
     }
 
     /// Populate the control flow graph from the raw buffer (ie deserialise it)

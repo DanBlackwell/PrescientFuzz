@@ -647,8 +647,8 @@ where
                 };
                 testcase.add_metadata(meta);
 
-                let max_cov_idx = cfg_metadata.max_coverage_map_index();
-                let required_len = if max_cov_idx > len { max_cov_idx } else { len };
+                let all_edges_len = cfg_metadata.all_edges_len();
+                let required_len = if all_edges_len > len { all_edges_len } else { len };
 
                 let neighbours_state = state
                     .metadata_mut::<MapNeighboursFeedbackMetadata>()
