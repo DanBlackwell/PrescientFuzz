@@ -13,12 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::{
-    corpus::{Corpus, CorpusId, HasTestcase, Testcase},
-    inputs::{Input, UsesInput},
-    feedbacks::{MapIndexesMetadata, cfg_prescience::{ControlFlowGraph, Reachability}},
-    schedulers::{Scheduler, TestcaseScore},
-    state::{HasCorpus, HasNamedMetadata, HasMetadata, HasRand, State, UsesState},
-    Error, feedbacks::{MapNoveltiesMetadata, MapNeighboursFeedbackMetadata},
+    corpus::{testcase::TestcaseMutationsMetadata, Corpus, CorpusId, HasTestcase, Testcase}, feedbacks::{cfg_prescience::{ControlFlowGraph, Reachability}, MapIndexesMetadata, MapNeighboursFeedbackMetadata, MapNoveltiesMetadata}, inputs::{Input, UsesInput}, schedulers::{Scheduler, TestcaseScore}, state::{HasCorpus, HasMetadata, HasNamedMetadata, HasRand, State, UsesState}, Error
 };
 
 /// A dummy TestcaseScore calculator
@@ -156,7 +151,11 @@ where
             let tc = state.corpus().get(idx).unwrap().borrow();
             let covered_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             let covered_indexes = covered_meta.list.clone();
-            let num_mutations = *tc.executions();
+            let num_mutations = if let Ok(meta) = tc.metadata::<TestcaseMutationsMetadata>() {
+                meta.num_mutations_executed        
+            } else {
+                0
+            };
             drop(tc);
 
             let reachabilities = {
@@ -254,7 +253,7 @@ where
             let mut weighting = HashMap::new();
             for (&index, &mutations) in &reachable_blocks_result.direct_neighbour_mutations_for_index {
                 let decrements = mutations / 100;
-                weighting.insert(index, 0.99f64.powi(decrements as i32));
+                weighting.insert(index, 0.9999f64.powi(decrements as i32));
             }
             weighting
         };
@@ -286,10 +285,12 @@ where
             let tc = state.corpus().get(entry)?.borrow();
             let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             for reachability in reachabilities {
-                let freq = reachable_blocks_result.frequency_for_reachability[&reachability];
-                let rarity = 1f64 / freq as f64;
-                let backoff_weighting = backoff_weighting_for_direct_neighbour[&reachability.direct_neighbour_ancestor_index];
-                neighbour_score += backoff_weighting * rarity * 1f64 / reachability.depth as f64;
+                let freq = reachable_blocks_result.frequency_for_reachability.get(&reachability);
+                if freq.is_none() { println!("frequency is none for {:?}", reachability); }
+                let rarity = 1f64 / *freq.unwrap() as f64;
+                let backoff_weighting = backoff_weighting_for_direct_neighbour.get(&reachability.direct_neighbour_ancestor_index);
+                if backoff_weighting.is_none() { println!("backoff_weighting is none for {:?}", reachability.direct_neighbour_ancestor_index); }
+                neighbour_score += backoff_weighting.unwrap() * rarity * 1f64 / reachability.depth as f64;
                 // Make sure that we have entries that get as close as possible to all indexes
                 if reachability.depth == reachable_blocks_result.least_depth_for_index[&reachability.index] {
                     reachability_favored |= favored_filled.insert(reachability.index);

@@ -6,14 +6,14 @@ use core::marker::PhantomData;
 use libafl_bolts::rands::Rand;
 
 use crate::{
-    corpus::{Corpus, CorpusId, HasCurrentCorpusIdx, Testcase},
+    corpus::{testcase::TestcaseMutationsMetadata, Corpus, CorpusId, HasCurrentCorpusIdx, Testcase},
     fuzzer::Evaluator,
     inputs::Input,
     mark_feature_time,
     mutators::{MultiMutator, MutationResult, Mutator},
     stages::Stage,
     start_timer,
-    state::{HasCorpus, HasRand, UsesState},
+    state::{HasCorpus, HasRand, UsesState, HasMetadata},
     Error,
 };
 #[cfg(feature = "introspection")]
@@ -125,6 +125,13 @@ where
 
         start_timer!(state);
         let mut testcase = state.corpus().get(corpus_idx)?.borrow_mut();
+        if let Ok(meta) = testcase.metadata_mut::<TestcaseMutationsMetadata>() {
+            meta.num_mutations_executed += num as usize;
+        } else {
+            testcase.add_metadata(
+                TestcaseMutationsMetadata { num_mutations_executed: num as usize }
+            );
+        }
         let Ok(input) = I::try_transform_from(&mut testcase, state, corpus_idx) else {
             return Ok(());
         };

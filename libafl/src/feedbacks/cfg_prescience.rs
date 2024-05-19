@@ -747,14 +747,10 @@ impl ControlFlowGraph {
         }
         let mut hit_functions = HashSet::new();
 
+
 //        assert!(input_coverage_map_indexes.clone().into_iter().copied().collect::<HashSet<usize>>().is_subset(all_coverage_map_indexes));
 
         while let Some((depth, to_explore, direct_neighbour_predecessor)) = queue.pop_front() {
-            // If it's None, then this is the first direct neighbour...
-            let direct_neighbour_predecessor = match direct_neighbour_predecessor {
-                Some(res) => Some(res),
-                None => Some(to_explore),
-            };
 
             debug_assert!(covered.contains(&to_explore), "to_explore: {to_explore}, covered: {:?}", covered);
 
@@ -772,12 +768,13 @@ impl ControlFlowGraph {
                     if let Some(neighbours) = self.neighbours_for_start_of_function(&func) {
                         for neighbour in neighbours {
                             if covered.insert(neighbour.0 as usize) {
+                                let direct_neighbour_ancestor_index = direct_neighbour_predecessor.unwrap_or(neighbour.0 as usize);
                                 reachable.push(Reachability {
                                     index: neighbour.0 as usize, 
                                     depth, 
-                                    direct_neighbour_ancestor_index: direct_neighbour_predecessor.unwrap() 
+                                    direct_neighbour_ancestor_index
                                 });
-                                queue.push_back((depth + 1, neighbour.0 as usize, direct_neighbour_predecessor));
+                                queue.push_back((depth + 1, neighbour.0 as usize, Some(direct_neighbour_ancestor_index)));
                             }
                         }
                     }
@@ -795,12 +792,13 @@ impl ControlFlowGraph {
                        if let Some(neighbours) = self.neighbours_for_start_of_function(&func) {
                            for neighbour in neighbours {
                                if covered.insert(neighbour.0 as usize) {
+                                    let direct_neighbour_ancestor_index = direct_neighbour_predecessor.unwrap_or(neighbour.0 as usize);
                                     reachable.push(Reachability {
                                         index: neighbour.0 as usize, 
                                         depth, 
-                                        direct_neighbour_ancestor_index: direct_neighbour_predecessor.unwrap()
+                                        direct_neighbour_ancestor_index
                                     });
-                                    queue.push_back((depth + 1, neighbour.0 as usize, direct_neighbour_predecessor));
+                                    queue.push_back((depth + 1, neighbour.0 as usize, Some(direct_neighbour_ancestor_index)));
                                }
                            }
                        }
@@ -812,22 +810,24 @@ impl ControlFlowGraph {
 
             for instr_cov_map_idx in bb.instrumented_instructions_cov_map_idxs.clone() {
                 if covered.insert(instr_cov_map_idx.0 as usize) {
+                    let direct_neighbour_ancestor_index = direct_neighbour_predecessor.unwrap_or(instr_cov_map_idx.0 as usize);
                     reachable.push(Reachability {
                         index: instr_cov_map_idx.0 as usize, 
                         depth, 
-                        direct_neighbour_ancestor_index: direct_neighbour_predecessor.unwrap()
+                        direct_neighbour_ancestor_index
                     });
                 }
             }
 
             for indirect_call_num in 0..bb.num_indirect_calls {
                 // create a unique ID for this indirect call based on the coverage map index
-                let idx = 1_000_000 + (bb.uuid.0 as usize & 0xFFFFFFFF) + indirect_call_num as usize;
-                if covered.insert(idx) {
+                let index = 1_000_000 + (bb.uuid.0 as usize & 0xFFFFFFFF) + indirect_call_num as usize;
+                if covered.insert(index) {
+                    let direct_neighbour_ancestor_index = direct_neighbour_predecessor.unwrap_or(index);
                     reachable.push(Reachability {
-                        index: idx,
+                        index,
                         depth, 
-                        direct_neighbour_ancestor_index: direct_neighbour_predecessor.unwrap()
+                        direct_neighbour_ancestor_index
                     });
                 }
             }
@@ -835,12 +835,13 @@ impl ControlFlowGraph {
             for successor in self.successor_cov_map_idxs_for(CoverageMapIdx(to_explore as u32)).to_owned() {
                 let map_idx = successor.0 as usize;
                 if covered.insert(map_idx) {
+                    let direct_neighbour_ancestor_index = direct_neighbour_predecessor.unwrap_or(map_idx);
                     reachable.push(Reachability {
                         index: map_idx,
                         depth, 
-                        direct_neighbour_ancestor_index: direct_neighbour_predecessor.unwrap()
+                        direct_neighbour_ancestor_index
                     });
-                    queue.push_back((depth + 1, map_idx, direct_neighbour_predecessor));
+                    queue.push_back((depth + 1, map_idx, Some(direct_neighbour_ancestor_index)));
                 }
             }
         }
