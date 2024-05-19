@@ -95,6 +95,23 @@ impl Default for ProbabilityMetadata {
     }
 }
 
+#[derive(PartialEq,Eq,Hash,Copy,Clone)]
+struct Reachability {
+    index: usize,
+    depth: usize,
+}
+
+struct ReachableBlocksResult {
+    /// Number of corpus entries this reachability appears in
+    frequency_for_reachability: HashMap<Reachability, usize>,
+    /// Cumulative number of times corpus entries directly neighbouring (ie depth 1)
+    /// this coverage map index have been mutated
+    direct_neighbour_mutations_for_index: HashMap<usize, usize>,
+    /// Lowest depth observed for the given index
+    least_depth_for_index: HashMap<usize, usize>,
+}
+
+
 impl<F, S> ProbabilitySamplingScheduler<F, S>
 where
     F: TestcaseScore<S>,
@@ -120,7 +137,12 @@ where
 
     /// return a map of {(index, depth): frequency}, where frequency is the number of testcases
     /// with this index being reachable at the given depth
-    fn recalculate_reachable_blocks(&self, state: &mut S) -> HashMap<(usize, usize), usize> {
+    fn recalculate_reachable_blocks(&self, state: &mut S) -> ReachableBlocksResult {
+        let mut result = ReachableBlocksResult { 
+            frequency_for_reachability: HashMap::new(),
+            direct_neighbour_mutations_for_index: HashMap::new(),
+            least_depth_for_index: HashMap::new(),
+        }
         let start = Instant::now();
 
         let all_ids = state.corpus().ids().collect::<Vec<CorpusId>>();
@@ -133,8 +155,6 @@ where
         let last_recalc_corpus_ids = full_neighbours_meta.corpus_ids_present_at_recalc.clone();
         full_neighbours_meta.corpus_ids_present_at_recalc = all_ids.clone();
 
-        let mut frequencies = HashMap::new();
-
         let mut recalcs = 0;
         for &idx in &all_ids {
             recalcs += 1;
@@ -142,6 +162,7 @@ where
             let tc = state.corpus().get(idx).unwrap().borrow();
             let covered_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             let covered_indexes = covered_meta.list.clone();
+            let num_mutations = *tc.executions();
             drop(tc);
 
             let (all_reachable, _called_funcs) = {
@@ -169,38 +190,42 @@ where
             }
 
             for (depth, index) in all_reachable {
-                let entry = (index, depth);
-                let new = if let Some(freq) = frequencies.get(&entry) {
+                // update reachability frequencies
+                let entry = Reachability { index, depth };
+                let new = if let Some(freq) = result.frequency_for_reachability.get(&entry) {
                     freq + 1
                 } else {
                     1
                 };
-                frequencies.insert(entry, new);
-            }
+                result.frequency_for_reachability.insert(entry, new);
 
-            // let mut tc = state.corpus().get(idx).unwrap().borrow_mut();
-            // let neighbours_meta = tc.metadata_mut::<MapUncoveredNeighboursMetadata>().unwrap();
-            // let mut reachable_vec = all_reachable.into_iter().collect::<Vec<(usize, usize)>>();
-            // reachable_vec.shrink_to_fit();
-            // neighbours_meta.all_reachable = reachable_vec;
+                // update number of mutations of direct neighbours (if appropriate)
+                if depth == 1 {
+                    let updated = if let Some(freq) = result.direct_neighbour_mutations_for_index.get(&index) {
+                        freq + num_mutations
+                    } else {
+                        num_mutations
+                    };
+                    result.direct_neighbour_mutations_for_index.insert(index, updated);
+                }
+
+                // update least depth for index (if we beat the previous depth)
+                if let Some(cur_min) = result.least_depth_for_index.get(&index) {
+                    if depth < *cur_min { result.least_depth_for_index.insert(index, depth); }
+                } else {
+                    result.least_depth_for_index.insert(index, depth);
+                }
+            }
         }
 
         println!("Whew, recalced all neighbours for {recalcs} entries (out of a possible {}); took: {:.2?}", all_ids.len(), start.elapsed());
 
-        frequencies
+        result
     }
 
     /// Recalculate the probability of each testcase being selected for mutation
     pub fn recalc_all_probabilities(&self, state: &mut S) -> Result<(), Error> {
-        let hits_for_edge_at_depth = self.recalculate_reachable_blocks(state);
-        let mut best_reachability = HashMap::new();
-        for ((index, depth), _freq) in hits_for_edge_at_depth.clone() {
-            if let Some(prev_depth) = best_reachability.get_mut(&index) {
-                if depth < *prev_depth { *prev_depth =  depth; }
-            } else {
-                best_reachability.insert(index, depth);
-            }
-        }
+        let reachable_blocks_result = self.recalculate_reachable_blocks(state);
 
         let full_neighbours_meta = state
             .metadata::<MapNeighboursFeedbackMetadata>()
@@ -229,6 +254,16 @@ where
         }
         time_ordered.sort_by(|(_id, score1), (_id2, score2)| score1.partial_cmp(score2).unwrap());
 
+        // The more this neighbour has been fuzzed, the less we'll prioritise it (maybe it's hard or infeasible)
+        let mut backoff_weighting_for_direct_neighbour = {
+            let mut weighting = HashMap::new();
+            for (&index, &mutations) in &reachable_blocks_result.direct_neighbour_mutations_for_index {
+                let decrements = mutations / 100;
+                weighting.insert(index, 0.99f64.powi(decrements as i32));
+            }
+            weighting
+        };
+
         let mut favored_filled = HashSet::with_capacity(65536);
         let mut reachability_favored_ids = HashSet::new();
         let mut coverage_favored_ids = HashSet::new();
@@ -256,10 +291,12 @@ where
             let tc = state.corpus().get(entry)?.borrow();
             let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             for (depth, index) in all_reachable {
-                let rarity = 1f64 / hits_for_edge_at_depth[&(index, depth)] as f64;
+                let reachability = Reachability { index, depth };
+                let freq = reachable_blocks_result.frequency_for_reachability[&reachability];
+                let rarity = 1f64 / freq as f64;
                 neighbour_score += rarity * 1f64 / depth as f64;
                 // Make sure that we have entries that get as close as possible to all indexes
-                if depth == best_reachability[&index] {
+                if depth == reachable_blocks_result.least_depth_for_index[&index] {
                     reachability_favored |= favored_filled.insert(index);
                 }
             }
