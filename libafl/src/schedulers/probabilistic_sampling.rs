@@ -15,7 +15,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::{
     corpus::{Corpus, CorpusId, HasTestcase, Testcase},
     inputs::{Input, UsesInput},
-    feedbacks::{MapIndexesMetadata, cfg_prescience::ControlFlowGraph},
+    feedbacks::{MapIndexesMetadata, cfg_prescience::{ControlFlowGraph, Reachability}},
     schedulers::{Scheduler, TestcaseScore},
     state::{HasCorpus, HasNamedMetadata, HasMetadata, HasRand, State, UsesState},
     Error, feedbacks::{MapNoveltiesMetadata, MapNeighboursFeedbackMetadata},
@@ -95,12 +95,6 @@ impl Default for ProbabilityMetadata {
     }
 }
 
-#[derive(PartialEq,Eq,Hash,Copy,Clone)]
-struct Reachability {
-    index: usize,
-    depth: usize,
-}
-
 struct ReachableBlocksResult {
     /// Number of corpus entries this reachability appears in
     frequency_for_reachability: HashMap<Reachability, usize>,
@@ -142,7 +136,7 @@ where
             frequency_for_reachability: HashMap::new(),
             direct_neighbour_mutations_for_index: HashMap::new(),
             least_depth_for_index: HashMap::new(),
-        }
+        };
         let start = Instant::now();
 
         let all_ids = state.corpus().ids().collect::<Vec<CorpusId>>();
@@ -165,7 +159,7 @@ where
             let num_mutations = *tc.executions();
             drop(tc);
 
-            let (all_reachable, _called_funcs) = {
+            let reachabilities = {
                 let cfg_metadata = state.metadata_mut::<ControlFlowGraph>().unwrap();
                 cfg_metadata.get_all_neighbours_full_depth(&covered_indexes, &covered_blocks)
             };
@@ -184,36 +178,37 @@ where
                     full_neighbours_meta.reachable_blocks.remove(&novelty);
                 }
 
-                for (_depth, index) in &all_reachable {
-                    full_neighbours_meta.reachable_blocks.insert(*index);
+                for reachability in &reachabilities {
+                    full_neighbours_meta.reachable_blocks.insert(reachability.index);
                 }
             }
 
-            for (depth, index) in all_reachable {
+            for reachability in reachabilities {
                 // update reachability frequencies
-                let entry = Reachability { index, depth };
-                let new = if let Some(freq) = result.frequency_for_reachability.get(&entry) {
+                let new = if let Some(freq) = result.frequency_for_reachability.get(&reachability) {
                     freq + 1
                 } else {
                     1
                 };
-                result.frequency_for_reachability.insert(entry, new);
+                result.frequency_for_reachability.insert(reachability.clone(), new);
 
                 // update number of mutations of direct neighbours (if appropriate)
-                if depth == 1 {
-                    let updated = if let Some(freq) = result.direct_neighbour_mutations_for_index.get(&index) {
+                if reachability.depth == 1 {
+                    let updated = if let Some(freq) = result.direct_neighbour_mutations_for_index.get(&reachability.index) {
                         freq + num_mutations
                     } else {
                         num_mutations
                     };
-                    result.direct_neighbour_mutations_for_index.insert(index, updated);
+                    result.direct_neighbour_mutations_for_index.insert(reachability.index, updated);
                 }
 
                 // update least depth for index (if we beat the previous depth)
-                if let Some(cur_min) = result.least_depth_for_index.get(&index) {
-                    if depth < *cur_min { result.least_depth_for_index.insert(index, depth); }
+                if let Some(cur_min) = result.least_depth_for_index.get(&reachability.index) {
+                    if reachability.depth < *cur_min { 
+                        result.least_depth_for_index.insert(reachability.index, reachability.depth); 
+                    }
                 } else {
-                    result.least_depth_for_index.insert(index, depth);
+                    result.least_depth_for_index.insert(reachability.index, reachability.depth);
                 }
             }
         }
@@ -255,7 +250,7 @@ where
         time_ordered.sort_by(|(_id, score1), (_id2, score2)| score1.partial_cmp(score2).unwrap());
 
         // The more this neighbour has been fuzzed, the less we'll prioritise it (maybe it's hard or infeasible)
-        let mut backoff_weighting_for_direct_neighbour = {
+        let backoff_weighting_for_direct_neighbour = {
             let mut weighting = HashMap::new();
             for (&index, &mutations) in &reachable_blocks_result.direct_neighbour_mutations_for_index {
                 let decrements = mutations / 100;
@@ -283,21 +278,21 @@ where
             let covered_indexes = idx_meta.list.clone();
             drop(tc);
 
-            let (all_reachable, _called_funcs) = {
+            let reachabilities = {
                 let cfg_metadata = state.metadata_mut::<ControlFlowGraph>().unwrap();
                 cfg_metadata.get_all_neighbours_full_depth(&covered_indexes, &covered_blocks)
             };
 
             let tc = state.corpus().get(entry)?.borrow();
             let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
-            for (depth, index) in all_reachable {
-                let reachability = Reachability { index, depth };
+            for reachability in reachabilities {
                 let freq = reachable_blocks_result.frequency_for_reachability[&reachability];
                 let rarity = 1f64 / freq as f64;
-                neighbour_score += rarity * 1f64 / depth as f64;
+                let backoff_weighting = backoff_weighting_for_direct_neighbour[&reachability.direct_neighbour_ancestor_index];
+                neighbour_score += backoff_weighting * rarity * 1f64 / reachability.depth as f64;
                 // Make sure that we have entries that get as close as possible to all indexes
-                if depth == reachable_blocks_result.least_depth_for_index[&index] {
-                    reachability_favored |= favored_filled.insert(index);
+                if reachability.depth == reachable_blocks_result.least_depth_for_index[&reachability.index] {
+                    reachability_favored |= favored_filled.insert(reachability.index);
                 }
             }
             neighbour_score_for_idx.insert(entry, neighbour_score);
