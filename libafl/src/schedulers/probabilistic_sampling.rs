@@ -46,6 +46,7 @@ pub struct ProbabilitySamplingScheduler<F, S>
 where
     S: UsesInput,
 {
+    backoff_factor: f64,
     phantom: PhantomData<(F, S)>,
 }
 
@@ -109,8 +110,9 @@ where
 {
     /// Creates a new [`struct@ProbabilitySamplingScheduler`]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new_with_backoff(backoff_factor: f64) -> Self {
         Self {
+            backoff_factor,
             phantom: PhantomData,
         }
     }
@@ -253,7 +255,7 @@ where
             let mut weighting = HashMap::new();
             for (&index, &mutations) in &reachable_blocks_result.direct_neighbour_mutations_for_index {
                 let decrements = mutations / 100;
-                weighting.insert(index, 0.9999f64.powi(decrements as i32));
+                weighting.insert(index, self.backoff_factor.powi(decrements as i32));
             }
             weighting
         };
@@ -285,14 +287,14 @@ where
             let tc = state.corpus().get(entry)?.borrow();
             let idx_meta = tc.metadata::<MapIndexesMetadata>().unwrap();
             for reachability in reachabilities {
-                let freq = reachable_blocks_result.frequency_for_reachability.get(&reachability);
-                if freq.is_none() { println!("frequency is none for {:?}", reachability); }
-                let rarity = 1f64 / *freq.unwrap() as f64;
-                let backoff_weighting = backoff_weighting_for_direct_neighbour.get(&reachability.direct_neighbour_ancestor_index);
-                if backoff_weighting.is_none() { println!("backoff_weighting is none for {:?}", reachability.direct_neighbour_ancestor_index); }
-                neighbour_score += backoff_weighting.unwrap() * rarity * 1f64 / reachability.depth as f64;
-                // Make sure that we have entries that get as close as possible to all indexes
+                // Only keep this if it's the best depth we've seen for this edge
                 if reachability.depth == reachable_blocks_result.least_depth_for_index[&reachability.index] {
+                    let freq = reachable_blocks_result.frequency_for_reachability.get(&reachability);
+                    if freq.is_none() { println!("frequency is none for {:?}", reachability); }
+                    let rarity = 1f64 / *freq.unwrap() as f64;
+                    let backoff_weighting = backoff_weighting_for_direct_neighbour.get(&reachability.direct_neighbour_ancestor_index);
+                    if backoff_weighting.is_none() { println!("backoff_weighting is none for {:?}", reachability.direct_neighbour_ancestor_index); }
+                    neighbour_score += backoff_weighting.unwrap() * rarity * 1f64 / reachability.depth as f64;
                     reachability_favored |= favored_filled.insert(reachability.index);
                 }
             }
@@ -437,7 +439,7 @@ where
     S::Input: HasLen,
 {
     fn default() -> Self {
-        Self::new()
+        Self::new_with_backoff(0.9999)
     }
 }
 

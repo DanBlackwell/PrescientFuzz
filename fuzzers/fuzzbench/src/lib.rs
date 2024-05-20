@@ -93,6 +93,13 @@ pub extern "C" fn libafl_main() {
                 .help("The file to read Control Flow Graph from"),
         )
         .arg(
+            Arg::new("backoff_factor")
+                .short('b')
+                .long("backoff_factor")
+                .help("The backoff factor for each neighbour (backoff_factor ^ (num_execs / 1_000))")
+                .default_value("0.9999")
+        )
+        .arg(
             Arg::new("logfile")
                 .short('l')
                 .long("logfile")
@@ -166,6 +173,11 @@ pub extern "C" fn libafl_main() {
 
     let cfg_file = res.get_one::<String>("cfg_file").map(PathBuf::from);
 
+    let backoff_factor = res.get_one::<String>("backoff_factor")
+        .unwrap()
+        .parse::<f64>()
+        .expect("Failed to parse backoff_factor");
+
     let logfile = PathBuf::from(res.get_one::<String>("logfile").unwrap().to_string());
 
     let timeout = Duration::from_millis(
@@ -176,7 +188,7 @@ pub extern "C" fn libafl_main() {
             .expect("Could not parse timeout in milliseconds"),
     );
 
-    fuzz(out_dir, crashes, &in_dir, tokens, cfg_file, &logfile, timeout)
+    fuzz(out_dir, crashes, &in_dir, tokens, cfg_file, &logfile, timeout, backoff_factor)
         .expect("An error occurred while fuzzing");
 }
 
@@ -213,6 +225,7 @@ fn fuzz(
     cfg_file: Option<PathBuf>,
     logfile: &PathBuf,
     timeout: Duration,
+    backoff_factor: f64,
 ) -> Result<(), Error> {
     let log = RefCell::new(OpenOptions::new().append(true).create(true).open(logfile)?);
 
@@ -324,7 +337,7 @@ fn fuzz(
     //     &edges_observer,
     //     Some(PowerSchedule::FAST),
     // ));
-    let scheduler = UncoveredNeighboursProbabilitySamplingScheduler::new();
+    let scheduler = UncoveredNeighboursProbabilitySamplingScheduler::new_with_backoff(backoff_factor);
 
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
