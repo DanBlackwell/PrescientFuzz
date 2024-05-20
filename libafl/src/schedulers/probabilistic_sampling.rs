@@ -254,7 +254,7 @@ where
         let backoff_weighting_for_direct_neighbour = {
             let mut weighting = HashMap::new();
             for (&index, &mutations) in &reachable_blocks_result.direct_neighbour_mutations_for_index {
-                let decrements = mutations / 100;
+                let decrements = mutations / 1_000;
                 weighting.insert(index, self.backoff_factor.powi(decrements as i32));
             }
             weighting
