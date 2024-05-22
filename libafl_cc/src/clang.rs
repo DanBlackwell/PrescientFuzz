@@ -1,9 +1,7 @@
 //! LLVM compiler Wrapper from `LibAFL`
 
 use std::{
-    env,
-    path::{Path, PathBuf},
-    str::FromStr,
+    env, fmt::format, path::{Path, PathBuf}, str::FromStr
 };
 
 use crate::{CompilerWrapper, Error, ToolWrapper, LIB_EXT, LIB_PREFIX};
@@ -406,6 +404,7 @@ impl ToolWrapper for ClangWrapper {
         }
 
         if !self.passes.is_empty() {
+            self.use_new_pm = false;
             if self.use_new_pm {
                 if let Some(ver) = LIBAFL_CC_LLVM_VERSION {
                     if ver < 16 {
@@ -416,6 +415,10 @@ impl ToolWrapper for ClangWrapper {
                 args.push("-flegacy-pass-manager".into());
             }
         }
+        args.push("-Wl,--lto-legacy-pass-manager".into());
+        args.push("--ld-path=ld.lld".into());
+        args.push("-flto".into());
+        args.push(format!("-Wl,-mllvm=-load={}", LLVMPasses::SanCovWithCFG.path().into_os_string().into_string().unwrap()));
         for pass in &self.passes {
             use_pass = true;
             if self.use_new_pm {

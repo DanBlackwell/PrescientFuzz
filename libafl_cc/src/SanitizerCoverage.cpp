@@ -45,6 +45,9 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
+
 #include <fstream>
 #include <iostream>
 #include <chrono>
@@ -1603,3 +1606,16 @@ ModulePass *llvm::createModuleSanitizerCoverageLegacyPassPass(
                                                BlocklistFiles);
 }
 
+static void registerLTOPass(const PassManagerBuilder &, llvm::legacy::PassManagerBase &PM) {
+  auto p = new ModuleSanitizerCoverageLegacyPass();
+  PM.add(p);
+}
+
+static RegisterStandardPasses RegisterCompTransPass(
+  PassManagerBuilder::EP_OptimizerLast, registerLTOPass);
+
+static RegisterStandardPasses RegisterCompTransPass0(
+  PassManagerBuilder::EP_EnabledOnOptLevel0, registerLTOPass);
+
+static RegisterStandardPasses RegisterCompTransPassLTO(
+  PassManagerBuilder::EP_FullLinkTimeOptimizationLast, registerLTOPass);

@@ -382,6 +382,10 @@ where
         prob_meta.map.insert(idx, avg);
         prob_meta.total_probability += avg;
 
+        // let max = prob_meta.map.values().fold(0f64, |max, &v| if v > max { v } else { max });
+        // prob_meta.map.insert(idx, max);
+        // prob_meta.total_probability += max;
+
         Ok(())
     }
 

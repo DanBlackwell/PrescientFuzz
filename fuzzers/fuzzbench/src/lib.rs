@@ -97,7 +97,7 @@ pub extern "C" fn libafl_main() {
                 .short('b')
                 .long("backoff_factor")
                 .help("The backoff factor for each neighbour (backoff_factor ^ (num_execs / 1_000))")
-                .default_value("0.9999")
+                .default_value("0.999")
         )
         .arg(
             Arg::new("logfile")
