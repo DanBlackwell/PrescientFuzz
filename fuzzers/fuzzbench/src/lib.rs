@@ -97,7 +97,7 @@ pub extern "C" fn libafl_main() {
                 .short('b')
                 .long("backoff_factor")
                 .help("The backoff factor for each neighbour (backoff_factor ^ (num_execs / 1_000))")
-                .default_value("0.999")
+                .default_value("0.9999")
         )
         .arg(
             Arg::new("logfile")
@@ -429,14 +429,14 @@ fn fuzz(
     }
 
     // Remove target output (logs still survive)
-    // #[cfg(unix)]
-    // {
-    //     let null_fd = file_null.as_raw_fd();
-    //     dup2(null_fd, io::stdout().as_raw_fd())?;
-    //     if std::env::var("LIBAFL_FUZZBENCH_DEBUG").is_err() {
-    //         dup2(null_fd, io::stderr().as_raw_fd())?;
-    //     }
-    // }
+    #[cfg(unix)]
+    {
+        let null_fd = file_null.as_raw_fd();
+        dup2(null_fd, io::stdout().as_raw_fd())?;
+        if std::env::var("LIBAFL_FUZZBENCH_DEBUG").is_err() {
+            dup2(null_fd, io::stderr().as_raw_fd())?;
+        }
+    }
     // reopen file to make sure we're at the end
     log.replace(OpenOptions::new().append(true).create(true).open(logfile)?);
 
