@@ -542,39 +542,39 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
   }
 
   // Open the binary file for reading in binary mode
-  std::ifstream file(cfg_path, std::ios::binary);
+  // std::ifstream file(cfg_path, std::ios::binary);
 
   uint32_t initial_function_count = 0;
-  if (file.is_open()) {
-    std::streampos fsize = file.tellg();
-    file.seekg(0, std::ios::end);
-    fsize = file.tellg() - fsize;
-    file.seekg(0, std::ios::beg);
+  // if (file.is_open()) {
+  //   std::streampos fsize = file.tellg();
+  //   file.seekg(0, std::ios::end);
+  //   fsize = file.tellg() - fsize;
+  //   file.seekg(0, std::ios::beg);
     
-    if (fsize >= 8) {
-      // Read the first 4 bytes into a buffer
-      unsigned char buffer[8];
-      file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
+  //   if (fsize >= 8) {
+  //     // Read the first 4 bytes into a buffer
+  //     unsigned char buffer[8];
+  //     file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
 
-      initial_function_count = (static_cast<uint32_t>(buffer[4]) << 24) |
-                               (static_cast<uint32_t>(buffer[5]) << 16) |
-                               (static_cast<uint32_t>(buffer[6]) << 8) |
-                               static_cast<uint32_t>(buffer[7]);
+  //     initial_function_count = (static_cast<uint32_t>(buffer[4]) << 24) |
+  //                              (static_cast<uint32_t>(buffer[5]) << 16) |
+  //                              (static_cast<uint32_t>(buffer[6]) << 8) |
+  //                              static_cast<uint32_t>(buffer[7]);
 
-    } else {
-      if (debug) 
-        fprintf(stderr, 
-		"CFG file %s was empty (%s - %s)\n", 
-		cfg_path, 
-		M.getName().str().c_str(), 
-		M.getSourceFileName().c_str());
-    }
+  //   } else {
+  //     if (debug) 
+  //       fprintf(stderr, 
+	// 	"CFG file %s was empty (%s - %s)\n", 
+	// 	cfg_path, 
+	// 	M.getName().str().c_str(), 
+	// 	M.getSourceFileName().c_str());
+  //   }
 
-    file.close();
-  } else {
-    fprintf(stderr, "Failed to open CFG file %s after calcing - do have the lock (%s - %s)\n", cfg_path, M.getName().str().c_str(), M.getSourceFileName().c_str());
-    assert(0);
-  }
+  //   file.close();
+  // } else {
+  //   fprintf(stderr, "Failed to open CFG file %s after calcing - do have the lock (%s - %s)\n", cfg_path, M.getName().str().c_str(), M.getSourceFileName().c_str());
+  //   assert(0);
+  // }
 
   std::vector<uint8_t> serialisedCFG;
 
@@ -627,7 +627,7 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
 #undef SERIALIZE_U32
 #undef SERIALIZE_PTR
 
-  std::ofstream outfile(cfg_path, std::ios::in | std::ios::binary);
+  std::ofstream outfile(cfg_path, std::ios::in | std::ios::binary | std::ofstream::trunc);
   if (outfile.is_open()) {
       // Get the current size of the file
       outfile.seekp(0, std::ios::beg);
@@ -702,25 +702,25 @@ bool ModuleSanitizerCoverageCFG::instrumentModule(
       fsize = file.tellg() - fsize;
       file.seekg(0, std::ios::beg);
       
-      if (fsize >= 8) {
-        // Read the first 4 bytes into a buffer
-        unsigned char buffer[8];
-        file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
+      // if (fsize >= 8) {
+      //   // Read the first 4 bytes into a buffer
+      //   unsigned char buffer[8];
+      //   file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
 
-        // Combine the bytes into a uint32_t
-        CurrentCoverageIndex = (static_cast<uint32_t>(buffer[0]) << 24) |
-                                (static_cast<uint32_t>(buffer[1]) << 16) |
-                                (static_cast<uint32_t>(buffer[2]) << 8) |
-                                static_cast<uint32_t>(buffer[3]);
-        initial_function_count = (static_cast<uint32_t>(buffer[4]) << 24) |
-                                 (static_cast<uint32_t>(buffer[5]) << 16) |
-                                 (static_cast<uint32_t>(buffer[6]) << 8) |
-                                 static_cast<uint32_t>(buffer[7]);
+      //   // Combine the bytes into a uint32_t
+      //   CurrentCoverageIndex = (static_cast<uint32_t>(buffer[0]) << 24) |
+      //                           (static_cast<uint32_t>(buffer[1]) << 16) |
+      //                           (static_cast<uint32_t>(buffer[2]) << 8) |
+      //                           static_cast<uint32_t>(buffer[3]);
+      //   initial_function_count = (static_cast<uint32_t>(buffer[4]) << 24) |
+      //                            (static_cast<uint32_t>(buffer[5]) << 16) |
+      //                            (static_cast<uint32_t>(buffer[6]) << 8) |
+      //                            static_cast<uint32_t>(buffer[7]);
 
-        if (debug) fprintf(stderr, "Set the Starting Coverage Index to %u (there were %u functions)\n", CurrentCoverageIndex, initial_function_count);
-      } else {
+      //   if (debug) fprintf(stderr, "Set the Starting Coverage Index to %u (there were %u functions)\n", CurrentCoverageIndex, initial_function_count);
+      // } else {
         if (debug) fprintf(stderr, "File %s was empty\n", cfg_path);
-      }
+      // }
 
       file.close();
     } else {
