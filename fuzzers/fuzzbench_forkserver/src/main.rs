@@ -11,7 +11,7 @@ use clap::{Arg, ArgAction, Command};
 use libafl::{
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
     events::SimpleEventManager,
-    executors::forkserver::{ForkserverExecutor, ControlFlowGraph},
+    executors::forkserver::ForkserverExecutor,
     feedback_or,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeFeedback},
     fuzzer::{Fuzzer, StdFuzzer},
@@ -21,24 +21,26 @@ use libafl::{
         scheduled::havoc_mutations, token_mutations::I2SRandReplace, tokens_mutations,
         StdMOptMutator, StdScheduledMutator, Tokens,
     },
-    observers::{HitcountsMapObserver, StdCmpValuesObserver, StdMapObserver, TimeObserver},
+    observers::{
+        CanTrack, HitcountsMapObserver, StdCmpValuesObserver, StdMapObserver, TimeObserver,
+    },
     schedulers::{
-        probabilistic_sampling::UncoveredNeighboursProbabilitySamplingScheduler,
+        powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
     },
     stages::{
-        calibrate::CalibrationStage, StdMutationalStage,
+        calibrate::CalibrationStage, power::StdPowerMutationalStage, StdMutationalStage,
         TracingStage,
     },
-    state::{HasCorpus, HasMetadata, StdState},
-    Error,
+    state::{HasCorpus, StdState},
+    Error, HasMetadata,
 };
 use libafl_bolts::{
-    current_nanos, current_time,
+    current_time,
     ownedref::OwnedRefMut,
     rands::StdRand,
     shmem::{ShMem, ShMemProvider, UnixShMemProvider},
     tuples::{tuple_list, Merge},
-    AsMutSlice,
+    AsSliceMut,
 };
 use libafl_targets::cmps::AFLppCmpLogMap;
 use nix::sys::signal::Signal;
@@ -65,12 +67,6 @@ pub fn main() {
                 .short('x')
                 .long("tokens")
                 .help("A file to read tokens from, to be used during fuzzing"),
-        )
-        .arg(
-            Arg::new("cfg_file")
-                .short('c')
-                .long("cfg_file")
-                .help("The file to read Control Flow Graph from"),
         )
         .arg(
             Arg::new("logfile")
@@ -161,8 +157,6 @@ pub fn main() {
 
     let tokens = res.get_one::<String>("tokens").map(PathBuf::from);
 
-    let cfg_file = res.get_one::<String>("cfg_file").map(PathBuf::from);
-
     let logfile = PathBuf::from(res.get_one::<String>("logfile").unwrap().to_string());
 
     let timeout = Duration::from_millis(
@@ -201,7 +195,6 @@ pub fn main() {
         crashes,
         &in_dir,
         tokens,
-        cfg_file,
         &logfile,
         timeout,
         executable,
@@ -220,7 +213,6 @@ fn fuzz(
     objective_dir: PathBuf,
     seed_dir: &PathBuf,
     tokenfile: Option<PathBuf>,
-    cfg_file: Option<PathBuf>,
     logfile: &PathBuf,
     timeout: Duration,
     executable: String,
@@ -232,16 +224,15 @@ fn fuzz(
     // a large initial map size that should be enough
     // to house all potential coverage maps for our targets
     // (we will eventually reduce the used size according to the actual map)
-    const MAP_SIZE: usize = 2_621_440;
+    const MAP_SIZE: usize = 65_536;
 
     let log = RefCell::new(OpenOptions::new().append(true).create(true).open(logfile)?);
 
     // 'While the monitor are state, they are usually used in the broker - which is likely never restarted
-    let monitor = SimpleMonitor::with_user_monitor(|s| {
+    let monitor = SimpleMonitor::new(|s| {
         println!("{s}");
         writeln!(log.borrow_mut(), "{:?} {}", current_time(), s).unwrap();
-    }, true);
-    // let monitor = SimplePrintingMonitor::new();
+    });
 
     // The event manager handle the various events generated during the fuzzing loop
     // such as the notification of the addition of a new item to the corpus
@@ -254,18 +245,19 @@ fn fuzz(
     let mut shmem = shmem_provider.new_shmem(MAP_SIZE).unwrap();
     // let the forkserver know the shmid
     shmem.write_to_env("__AFL_SHM_ID").unwrap();
-    let shmem_buf = shmem.as_mut_slice();
+    let shmem_buf = shmem.as_slice_mut();
     // To let know the AFL++ binary that we have a big map
     std::env::set_var("AFL_MAP_SIZE", format!("{}", MAP_SIZE));
 
     // Create an observation channel using the hitcounts map of AFL++
-    let edges_observer =
-        unsafe { HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)) };
+    let edges_observer = unsafe {
+        HitcountsMapObserver::new(StdMapObserver::new("shared_mem", shmem_buf)).track_indices()
+    };
 
     // Create an observation channel to keep track of the execution time
     let time_observer = TimeObserver::new("time");
 
-    let map_feedback = MaxMapFeedback::tracking(&edges_observer, true, true);
+    let map_feedback = MaxMapFeedback::new(&edges_observer);
 
     let calibration = CalibrationStage::new(&map_feedback);
 
@@ -275,7 +267,7 @@ fn fuzz(
         // New maximization map feedback linked to the edges observer and the feedback state
         map_feedback,
         // Time feedback, this one does not need a feedback state
-        TimeFeedback::with_observer(&time_observer)
+        TimeFeedback::new(&time_observer)
     );
 
     // A feedback to choose if an input is a solution or not
@@ -284,7 +276,7 @@ fn fuzz(
     // create a State from scratch
     let mut state = StdState::new(
         // RNG
-        StdRand::with_seed(current_nanos()),
+        StdRand::new(),
         // Corpus that will be evolved, we keep it in memory for performance
         InMemoryOnDiskCorpus::<BytesInput>::new(corpus_dir).unwrap(),
         // Corpus in which we store solutions (crashes in this example),
@@ -308,46 +300,32 @@ fn fuzz(
         5,
     )?;
 
-    let mutation = StdMutationalStage::new(mutator);
-    // let power = StdPowerMutationalStage::new(mutator);
+    let power = StdPowerMutationalStage::new(mutator);
 
     // A minimization+queue policy to get testcasess from the corpus
-    // let scheduler = IndexesLenTimeMinimizerScheduler::new(StdWeightedScheduler::with_schedule(
-    //     &mut state,
-    //     &edges_observer,
-    //     Some(PowerSchedule::EXPLORE),
-    // ));
-    let scheduler = UncoveredNeighboursProbabilitySamplingScheduler::new();
+    let scheduler = IndexesLenTimeMinimizerScheduler::new(
+        &edges_observer,
+        StdWeightedScheduler::with_schedule(
+            &mut state,
+            &edges_observer,
+            Some(PowerSchedule::EXPLORE),
+        ),
+    );
 
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);
 
     let mut tokens = Tokens::new();
-    let mut builder = ForkserverExecutor::builder()
+    let mut executor = ForkserverExecutor::builder()
         .program(executable)
         .debug_child(debug_child)
         .shmem_provider(&mut shmem_provider)
+        .autotokens(&mut tokens)
         .parse_afl_cmdline(arguments)
         .coverage_map_size(MAP_SIZE)
-        .autotokens(&mut tokens)
         .timeout(timeout)
         .kill_signal(signal)
-        .is_persistent(true);
-
-    let mut control_flow_graph = ControlFlowGraph::new();
-
-    if let Some(cfg_file) = cfg_file {
-        println!("Loading CFG from file: {:?}", cfg_file);
-        let mut file = std::fs::File::open(cfg_file)?;
-        let mut buffer = Vec::new();
-        use std::io::Read;
-        file.read_to_end(&mut buffer)?;
-        control_flow_graph.parse_from_buf(&buffer);
-    } else {
-        builder = builder.control_flow_graph(&mut control_flow_graph);
-    }
-
-    let mut executor = builder
+        .is_persistent(true)
         .build_dynamic_map(edges_observer, tuple_list!(time_observer))
         .unwrap();
 
@@ -355,13 +333,9 @@ fn fuzz(
     if let Some(tokenfile) = tokenfile {
         tokens.add_from_file(tokenfile)?;
     }
-
     if !tokens.is_empty() {
         state.add_metadata(tokens);
     }
-
-    assert!(!control_flow_graph.is_empty());
-    state.add_metadata(control_flow_graph);
 
     state
         .load_initial_inputs(&mut fuzzer, &mut executor, &mut mgr, &[seed_dir.clone()])
@@ -398,12 +372,12 @@ fn fuzz(
             StdMutationalStage::new(StdScheduledMutator::new(tuple_list!(I2SRandReplace::new())));
 
         // The order of the stages matter!
-        let mut stages = tuple_list!(calibration, tracing, i2s, mutation);
+        let mut stages = tuple_list!(calibration, tracing, i2s, power);
 
         fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)?;
     } else {
         // The order of the stages matter!
-        let mut stages = tuple_list!(calibration, mutation);
+        let mut stages = tuple_list!(calibration, power);
 
         fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)?;
     }
