@@ -31,7 +31,7 @@ use libafl::{
     observers::{CanTrack, HitcountsMapObserver, TimeObserver},
     schedulers::{
         powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
-        probabilistic_sampling::UncoveredNeighboursProbabilitySamplingScheduler,
+        prescient_weighted::PrescientProbabilitySamplingScheduler,
     },
     stages::{
         calibrate::CalibrationStage, power::StdPowerMutationalStage, StdMutationalStage,
@@ -243,7 +243,7 @@ fn fuzz(
         #[cfg(windows)]
         println!("{s}");
         writeln!(log.borrow_mut(), "{:?} {s}", current_time()).unwrap();
-    }, true);
+    });
 
     // We need a shared map to store our state before a crash.
     // This way, we are able to continue fuzzing afterwards.
@@ -332,7 +332,7 @@ fn fuzz(
 
     let mutation = StdMutationalStage::with_max_iterations(mutator, 1024);
 
-    let scheduler = UncoveredNeighboursProbabilitySamplingScheduler::new_with_backoff(backoff_factor);
+    let scheduler = PrescientProbabilitySamplingScheduler::new_with_backoff(backoff_factor);
 
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, feedback, objective);

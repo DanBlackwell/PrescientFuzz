@@ -14,7 +14,7 @@ use core::{
 use libafl_bolts::AsSlice;
 use libafl_bolts::{
     tuples::{Handle, Handled, MatchNameRef},
-    AsIter, AsSlice, HasRefCnt, Named,
+    AsIter, HasRefCnt, Named,
 };
 use num_traits::PrimInt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -848,32 +848,32 @@ where
     N: IsNovel<T>,
     C: CanTrack + AsRef<O> + Named,
 {
-    // /// Create new `MapFeedback`
-    // #[must_use]
-    // pub fn new(map_observer: &C) -> Self {
-    //     Self {
-    //         novelties: if C::NOVELTIES { Some(vec![]) } else { None },
-    //         name: map_observer.name().clone(),
-    //         map_ref: map_observer.handle(),
-    //         stats_name: create_stats_name(map_observer.name()),
-    //         phantom: PhantomData,
-    //     }
-    // }
+    /// Create new `MapFeedback`
+    #[must_use]
+    pub fn new(map_observer: &C) -> Self {
+        Self {
+            novelties: if C::NOVELTIES { Some(vec![]) } else { None },
+            name: map_observer.name().clone(),
+            map_ref: map_observer.handle(),
+            stats_name: create_stats_name(map_observer.name()),
+            phantom: PhantomData,
+        }
+    }
 
-    // /// Creating a new `MapFeedback` with a specific name. This is usefully whenever the same
-    // /// feedback is needed twice, but with a different history. Using `new()` always results in the
-    // /// same name and therefore also the same history.
-    // #[must_use]
-    // pub fn with_name(name: &'static str, map_observer: &C) -> Self {
-    //     let name = Cow::from(name);
-    //     Self {
-    //         novelties: if C::NOVELTIES { Some(vec![]) } else { None },
-    //         map_ref: map_observer.handle(),
-    //         stats_name: create_stats_name(&name),
-    //         name,
-    //         phantom: PhantomData,
-    //     }
-    // }
+    /// Creating a new `MapFeedback` with a specific name. This is usefully whenever the same
+    /// feedback is needed twice, but with a different history. Using `new()` always results in the
+    /// same name and therefore also the same history.
+    #[must_use]
+    pub fn with_name(name: &'static str, map_observer: &C) -> Self {
+        let name = Cow::from(name);
+        Self {
+            novelties: if C::NOVELTIES { Some(vec![]) } else { None },
+            map_ref: map_observer.handle(),
+            stats_name: create_stats_name(&name),
+            name,
+            phantom: PhantomData,
+        }
+    }
 
     #[allow(clippy::wrong_self_convention)]
     #[allow(clippy::needless_range_loop)]

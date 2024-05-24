@@ -117,10 +117,10 @@ where
         let num = self.iterations(state)?;
         let mut testcase = state.current_testcase_mut()?;
         if let Ok(meta) = testcase.metadata_mut::<TestcaseMutationsMetadata>() {
-            meta.num_mutations_executed += num as usize;
+            meta.num_mutations_executed += num;
         } else {
             testcase.add_metadata(
-                TestcaseMutationsMetadata { num_mutations_executed: num as usize }
+                TestcaseMutationsMetadata { num_mutations_executed: num }
             );
         }
 

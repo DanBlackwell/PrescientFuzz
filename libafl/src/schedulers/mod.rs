@@ -26,6 +26,9 @@ pub use accounting::CoverageAccountingScheduler;
 pub mod weighted;
 pub use weighted::{StdWeightedScheduler, WeightedScheduler};
 
+pub mod prescient_weighted;
+pub use prescient_weighted::{PrescientProbabilitySamplingScheduler, ProbabilityMetadata};
+
 pub mod tuneable;
 use libafl_bolts::{
     rands::Rand,
