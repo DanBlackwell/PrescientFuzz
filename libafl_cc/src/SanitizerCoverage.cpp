@@ -45,9 +45,6 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
-
 #include <fstream>
 #include <iostream>
 #include <chrono>
@@ -170,13 +167,18 @@ const char SanCovLowestStackName[] = "__sancov_lowest_stack";
 //                                   cl::desc("max stack depth tracing"),
 //                                   cl::Hidden, cl::init(false));
 
+namespace llvm {
+  void initializeModuleSanitizerCoverageCFGLegacyPassPass(PassRegistry &PB);
+}
+
 namespace {
 
 typedef struct BBInfo {
   BasicBlock               *ptr;
+  uint32_t                  uuid;
   uint32_t                  blockID;
   std::vector<std::string>  calledFuncsNames;
-  std::vector<BasicBlock *> successorBBptrs;
+  std::vector<uint32_t>     successorBBuuids;
   std::vector<uint32_t>     instrumentedInstrsIDs;
   uint32_t                  numIndirectFunctionCalls;
 } BBInfo;
@@ -317,6 +319,7 @@ private:
 
   int debug = 0;
   uint32_t CurrentCoverageIndex = 0; 
+  uint32_t CurrentBBuuid = 1'000'000;
   std::unordered_map<std::string, std::vector<BBInfo>> bbInfosForFunctionNamed;
 };
 
@@ -345,9 +348,9 @@ llvmGetPassPluginInfo() {
 
 }
 
-class ModuleSanitizerCoverageLegacyPass : public ModulePass {
+class ModuleSanitizerCoverageCFGLegacyPass : public ModulePass {
 public:
-  ModuleSanitizerCoverageLegacyPass(
+  ModuleSanitizerCoverageCFGLegacyPass(
       const SanitizerCoverageOptions &Options = SanitizerCoverageOptions(),
       const std::vector<std::string> &AllowlistFiles =
           std::vector<std::string>(),
@@ -360,7 +363,7 @@ public:
     if (BlocklistFiles.size() > 0)
       Blocklist = SpecialCaseList::createOrDie(BlocklistFiles,
                                                *vfs::getRealFileSystem());
-    initializeModuleSanitizerCoverageLegacyPassPass(
+    initializeModuleSanitizerCoverageCFGLegacyPassPass(
         *PassRegistry::getPassRegistry());
   }
   bool runOnModule(Module &M) override {
@@ -551,9 +554,9 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
     fsize = file.tellg() - fsize;
     file.seekg(0, std::ios::beg);
     
-    if (fsize >= 8) {
+    if (fsize >= 12) {
       // Read the first 4 bytes into a buffer
-      unsigned char buffer[8];
+      unsigned char buffer[12];
       file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
 
       initial_function_count = (static_cast<uint32_t>(buffer[4]) << 24) |
@@ -564,10 +567,10 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
     } else {
       if (debug) 
         fprintf(stderr, 
-		"CFG file %s was empty (%s - %s)\n", 
-		cfg_path, 
-		M.getName().str().c_str(), 
-		M.getSourceFileName().c_str());
+		      "CFG file %s was empty (%s - %s)\n", 
+		      cfg_path, 
+		      M.getName().str().c_str(), 
+		      M.getSourceFileName().c_str());
     }
 
     file.close();
@@ -599,8 +602,7 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
     SERIALIZE_U32(static_cast<uint32_t>(bbInfos.size()));
   
     for (BBInfo &bbInfo: bbInfos) {
-      SERIALIZE_PTR(bbInfo.ptr);
-      // uint32_t cov_map_idx = (bbInfo.blockID == UINT32_MAX) ? UINT32_MAX : bbInfo.blockID + coverage_index_offset;
+      SERIALIZE_U32(bbInfo.uuid);
       SERIALIZE_U32(bbInfo.blockID);
       SERIALIZE_U32(bbInfo.numIndirectFunctionCalls);
 
@@ -610,9 +612,9 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
         serialisedCFG.insert(serialisedCFG.end(), called.begin(), called.end());
       }
 
-      SERIALIZE_U32(static_cast<uint32_t>(bbInfo.successorBBptrs.size()));
-      for (auto bbPtr: bbInfo.successorBBptrs) {
-        SERIALIZE_PTR(bbPtr);
+      SERIALIZE_U32(static_cast<uint32_t>(bbInfo.successorBBuuids.size()));
+      for (auto uuid: bbInfo.successorBBuuids) {
+        SERIALIZE_U32(uuid);
       }
 
       SERIALIZE_U32(static_cast<uint32_t>(bbInfo.instrumentedInstrsIDs.size()));
@@ -646,9 +648,15 @@ void ModuleSanitizerCoverageCFG::dumpCFGtoFile(Module &M) {
       bytes[3] = static_cast<uint8_t>(total_functions & 0xFF);
       outfile.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
 
-      printf("LibAFL: Instrumented %u blocks, final coverage index: %u\n", 
-             CurrentCoverageIndex,
-             final_coverage_index);
+      uint32_t final_bb_uuid = CurrentBBuuid;
+      bytes[0] = static_cast<uint8_t>((final_bb_uuid >> 24) & 0xFF);
+      bytes[1] = static_cast<uint8_t>((final_bb_uuid >> 16) & 0xFF);
+      bytes[2] = static_cast<uint8_t>((final_bb_uuid >> 8) & 0xFF);
+      bytes[3] = static_cast<uint8_t>(final_bb_uuid & 0xFF);
+      outfile.write(reinterpret_cast<const char*>(bytes), sizeof(bytes));
+
+      printf("LibAFL: Instrumented %u blocks, final coverage index: %u, final bb UUID: %u\n",
+             CurrentCoverageIndex, final_coverage_index, final_bb_uuid);
 
       outfile.seekp(0, std::ios::end);
       outfile.write(reinterpret_cast<const char*>(serialisedCFG.data()), serialisedCFG.size());
@@ -702,9 +710,9 @@ bool ModuleSanitizerCoverageCFG::instrumentModule(
       fsize = file.tellg() - fsize;
       file.seekg(0, std::ios::beg);
       
-      if (fsize >= 8) {
+      if (fsize >= 12) {
         // Read the first 4 bytes into a buffer
-        unsigned char buffer[8];
+        unsigned char buffer[12];
         file.read(reinterpret_cast<char*>(buffer), sizeof(buffer));
 
         // Combine the bytes into a uint32_t
@@ -716,15 +724,19 @@ bool ModuleSanitizerCoverageCFG::instrumentModule(
                                  (static_cast<uint32_t>(buffer[5]) << 16) |
                                  (static_cast<uint32_t>(buffer[6]) << 8) |
                                  static_cast<uint32_t>(buffer[7]);
+        CurrentBBuuid = (static_cast<uint32_t>(buffer[8]) << 24) |
+                        (static_cast<uint32_t>(buffer[9]) << 16) |
+                        (static_cast<uint32_t>(buffer[10]) << 8) |
+                         static_cast<uint32_t>(buffer[11]);
 
-        if (debug) fprintf(stderr, "Set the Starting Coverage Index to %u (there were %u functions)\n", CurrentCoverageIndex, initial_function_count);
+        if (debug) fprintf(stderr, "Set the Starting Coverage Index to %u, bb uuid to %u (there were %u functions)\n", CurrentCoverageIndex, CurrentBBuuid, initial_function_count);
       } else {
         if (debug) fprintf(stderr, "File %s was empty\n", cfg_path);
       }
 
       file.close();
     } else {
-      fprintf(stderr, "Failed to open CFG file %s (%s - %s) error %d\n", cfg_path, M.getName().str().c_str(), M.getSourceFileName().c_str(), std::strerror(errno));
+      fprintf(stderr, "Failed to open CFG file %s (%s - %s) error %s\n", cfg_path, M.getName().str().c_str(), M.getSourceFileName().c_str(), std::strerror(errno));
       assert(0);
     }
   } else {
@@ -1107,9 +1119,12 @@ void ModuleSanitizerCoverageCFG::instrumentFunction(
   const PostDominatorTree *PDT = PDTCallback(F);
   bool IsLeafFunc = true;
   std::unordered_map<BasicBlock *, BBInfo> infoForBBat;
+  std::unordered_map<BasicBlock *, uint32_t> uuidForBBat;
 
   for (auto &BB : F) {
     BBInfo curBBinfo;
+    curBBinfo.uuid = ++CurrentBBuuid;
+    uuidForBBat[&BB] = CurrentBBuuid;
     curBBinfo.blockID = UINT32_MAX;
     curBBinfo.numIndirectFunctionCalls = 0;
     curBBinfo.ptr = &BB;
@@ -1133,9 +1148,9 @@ void ModuleSanitizerCoverageCFG::instrumentFunction(
             if (debug) fprintf(stderr, "Adding called function %s to %p\n", FuncName.c_str(), &BB);
             curBBinfo.calledFuncsNames.push_back(FuncName);
           } else {
-	    if (debug) fprintf(stderr, "Skipping called function %s\n", FuncName.c_str());
-	  }
-	}
+	          if (debug) fprintf(stderr, "Skipping called function %s\n", FuncName.c_str());
+	        }
+	      }
       }
       if (Options.IndirectCalls) {
         CallBase *CB = dyn_cast<CallBase>(&Inst);
@@ -1190,7 +1205,7 @@ void ModuleSanitizerCoverageCFG::instrumentFunction(
     // Iterate over the successors of the BasicBlock using the iterators
     for (auto succIt = succBegin; succIt != succEnd; ++succIt) {
       BasicBlock* succ = *succIt;
-      infoForBBat[&BB].successorBBptrs.push_back(succ);
+      infoForBBat[&BB].successorBBuuids.push_back(uuidForBBat[succ]);
     }
   }
 
@@ -1205,8 +1220,8 @@ void ModuleSanitizerCoverageCFG::instrumentFunction(
   }
   for (auto info : all) {
     if (debug) {
-      fprintf(stderr, "  { ptr: %p, id: %u, called_funcs: %lu, successors: %lu, instrumentedInstrs: %lu }\n",
-        info.ptr, info.blockID, info.calledFuncsNames.size(), info.successorBBptrs.size(), info.instrumentedInstrsIDs.size());
+      fprintf(stderr, "  { ptr: %p, uuid: %u, cov_map_idx: %u, called_funcs: %lu, successors: %lu, instrumentedInstrs: %lu }\n",
+        info.ptr, info.uuid, info.blockID, info.calledFuncsNames.size(), info.successorBBuuids.size(), info.instrumentedInstrsIDs.size());
     }
   }
 
@@ -1589,33 +1604,19 @@ ModuleSanitizerCoverageCFG::getSectionEnd(const std::string &Section) const {
   return "__stop___" + Section;
 }
 
- char ModuleSanitizerCoverageLegacyPass::ID = 0;
- INITIALIZE_PASS_BEGIN(ModuleSanitizerCoverageLegacyPass, "sancov",
+ char ModuleSanitizerCoverageCFGLegacyPass::ID = 0;
+ INITIALIZE_PASS_BEGIN(ModuleSanitizerCoverageCFGLegacyPass, "sancov",
                        "Pass for instrumenting coverage on functions", false,
                        false)
  INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
  INITIALIZE_PASS_DEPENDENCY(PostDominatorTreeWrapperPass)
- INITIALIZE_PASS_END(ModuleSanitizerCoverageLegacyPass, "sancov",
+ INITIALIZE_PASS_END(ModuleSanitizerCoverageCFGLegacyPass, "sancov",
                      "Pass for instrumenting coverage on functions", false,
                      false)
-ModulePass *llvm::createModuleSanitizerCoverageLegacyPassPass(
-    const SanitizerCoverageOptions &Options,
-    const std::vector<std::string> &AllowlistFiles,
-    const std::vector<std::string> &BlocklistFiles) {
-  return new ModuleSanitizerCoverageLegacyPass(Options, AllowlistFiles,
-                                               BlocklistFiles);
-}
-
-static void registerLTOPass(const PassManagerBuilder &, llvm::legacy::PassManagerBase &PM) {
-  auto p = new ModuleSanitizerCoverageLegacyPass();
-  PM.add(p);
-}
-
-static RegisterStandardPasses RegisterCompTransPass(
-  PassManagerBuilder::EP_OptimizerLast, registerLTOPass);
-
-static RegisterStandardPasses RegisterCompTransPass0(
-  PassManagerBuilder::EP_EnabledOnOptLevel0, registerLTOPass);
-
-static RegisterStandardPasses RegisterCompTransPassLTO(
-  PassManagerBuilder::EP_FullLinkTimeOptimizationLast, registerLTOPass);
+// ModulePass *llvm::createModuleSanitizerCoverageCFGLegacyPassPass(
+//     const SanitizerCoverageOptions &Options,
+//     const std::vector<std::string> &AllowlistFiles,
+//     const std::vector<std::string> &BlocklistFiles) {
+//   return new ModuleSanitizerCoverageCFGLegacyPass(Options, AllowlistFiles,
+//                                                BlocklistFiles);
+// }

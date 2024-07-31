@@ -323,12 +323,13 @@ fn fuzz(
     let i2s = StdMutationalStage::new(StdScheduledMutator::new(tuple_list!(I2SRandReplace::new())));
 
     // Setup a MOPT mutator
-    let mutator = StdMOptMutator::new(
-        &mut state,
-        havoc_mutations().merge(tokens_mutations()),
-        7,
-        5,
-    )?;
+    // let mutator = StdMOptMutator::new(
+    //     &mut state,
+    //     havoc_mutations().merge(tokens_mutations()),
+    //     7,
+    //     5,
+    // )?;
+    let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
 
     let mutation = StdMutationalStage::with_max_iterations(mutator, 1024);
 
